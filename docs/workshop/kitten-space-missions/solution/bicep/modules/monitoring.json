@@ -1,0 +1,292 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.39.26.7824",
+      "templateHash": "12834721492518025808"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure region for resources"
+      }
+    },
+    "projectName": {
+      "type": "string",
+      "metadata": {
+        "description": "Project name"
+      }
+    },
+    "workloadName": {
+      "type": "string",
+      "metadata": {
+        "description": "Workload name"
+      }
+    },
+    "environment": {
+      "type": "string",
+      "metadata": {
+        "description": "Environment name"
+      }
+    },
+    "tags": {
+      "type": "object",
+      "metadata": {
+        "description": "Resource tags"
+      }
+    },
+    "logAnalyticsRetentionDays": {
+      "type": "int",
+      "defaultValue": "[if(equals(parameters('environment'), 'dev'), 7, 30)]",
+      "metadata": {
+        "description": "Log Analytics retention in days"
+      }
+    }
+  },
+  "variables": {
+    "resourceNamePrefix": "[format('{0}-{1}-{2}', parameters('projectName'), parameters('workloadName'), parameters('environment'))]",
+    "logAnalyticsWorkspaceName": "[format('log-{0}', variables('resourceNamePrefix'))]",
+    "appInsightsName": "[format('appi-{0}', variables('resourceNamePrefix'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2021-12-01-preview",
+      "name": "[variables('logAnalyticsWorkspaceName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": "[parameters('logAnalyticsRetentionDays')]",
+        "workspaceCapping": {
+          "dailyQuotaGb": -1
+        },
+        "publicNetworkAccessForIngestion": "Enabled",
+        "publicNetworkAccessForQuery": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('appInsightsName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web",
+        "RetentionInDays": "[parameters('logAnalyticsRetentionDays')]",
+        "publicNetworkAccessForIngestion": "Enabled",
+        "publicNetworkAccessForQuery": "Enabled",
+        "IngestionMode": "LogAnalytics",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsWorkspaceName'))]",
+        "SamplingPercentage": 100,
+        "DisableIpMasking": false,
+        "ImmediatePurgeDataOn30Days": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsWorkspaceName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/actionGroups",
+      "apiVersion": "2023-01-01",
+      "name": "[format('ag-{0}', variables('resourceNamePrefix'))]",
+      "location": "global",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "groupShortName": "KittenAPI",
+        "enabled": true,
+        "armRoleReceivers": [],
+        "automationRunbookReceivers": [],
+        "azureAppPushReceivers": [],
+        "azureFunctionReceivers": [],
+        "emailReceivers": [],
+        "eventHubReceivers": [],
+        "itsmReceivers": [],
+        "logicAppReceivers": [],
+        "smsReceivers": [],
+        "voiceReceivers": [],
+        "webhookReceivers": []
+      }
+    },
+    {
+      "type": "Microsoft.Insights/metricAlerts",
+      "apiVersion": "2018-03-01",
+      "name": "[format('alert-http5xx-{0}', variables('resourceNamePrefix'))]",
+      "location": "global",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "description": "Alert when HTTP 5xx errors exceed threshold",
+        "severity": 2,
+        "enabled": false,
+        "scopes": [
+          "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]"
+        ],
+        "evaluationFrequency": "PT1M",
+        "windowSize": "PT5M",
+        "criteria": {
+          "odata.type": "Microsoft.Azure.Monitor.MultipleResourceMultipleMetricCriteria",
+          "allOf": [
+            {
+              "name": "Server errors",
+              "metricName": "server/exceptions",
+              "operator": "GreaterThan",
+              "threshold": 10,
+              "timeAggregation": "Count",
+              "criterionType": "StaticThresholdCriterion",
+              "dimensions": []
+            }
+          ]
+        },
+        "actions": [
+          {
+            "actionGroupId": "[resourceId('Microsoft.Insights/actionGroups', format('ag-{0}', variables('resourceNamePrefix')))]",
+            "webHookProperties": {}
+          }
+        ],
+        "autoMitigate": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('ag-{0}', variables('resourceNamePrefix')))]",
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/metricAlerts",
+      "apiVersion": "2018-03-01",
+      "name": "[format('alert-responsetime-{0}', variables('resourceNamePrefix'))]",
+      "location": "global",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "description": "Alert when p95 response time exceeds 500ms",
+        "severity": 3,
+        "enabled": false,
+        "scopes": [
+          "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]"
+        ],
+        "evaluationFrequency": "PT1M",
+        "windowSize": "PT5M",
+        "criteria": {
+          "odata.type": "Microsoft.Azure.Monitor.MultipleResourceMultipleMetricCriteria",
+          "allOf": [
+            {
+              "name": "Response time",
+              "metricName": "performanceCounters/processorCpuPercentage",
+              "operator": "GreaterThan",
+              "threshold": 500,
+              "timeAggregation": "Average",
+              "criterionType": "StaticThresholdCriterion",
+              "dimensions": []
+            }
+          ]
+        },
+        "actions": [
+          {
+            "actionGroupId": "[resourceId('Microsoft.Insights/actionGroups', format('ag-{0}', variables('resourceNamePrefix')))]",
+            "webHookProperties": {}
+          }
+        ],
+        "autoMitigate": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('ag-{0}', variables('resourceNamePrefix')))]",
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/metricAlerts",
+      "apiVersion": "2018-03-01",
+      "name": "[format('alert-failedrequests-{0}', variables('resourceNamePrefix'))]",
+      "location": "global",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "description": "Alert when failed request rate exceeds 20%",
+        "severity": 2,
+        "enabled": false,
+        "scopes": [
+          "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]"
+        ],
+        "evaluationFrequency": "PT1M",
+        "windowSize": "PT5M",
+        "criteria": {
+          "odata.type": "Microsoft.Azure.Monitor.MultipleResourceMultipleMetricCriteria",
+          "allOf": [
+            {
+              "name": "Failed requests",
+              "metricName": "requests/failed",
+              "operator": "GreaterThan",
+              "threshold": 20,
+              "timeAggregation": "Percentage",
+              "criterionType": "StaticThresholdCriterion",
+              "dimensions": []
+            }
+          ]
+        },
+        "actions": [
+          {
+            "actionGroupId": "[resourceId('Microsoft.Insights/actionGroups', format('ag-{0}', variables('resourceNamePrefix')))]",
+            "webHookProperties": {}
+          }
+        ],
+        "autoMitigate": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/actionGroups', format('ag-{0}', variables('resourceNamePrefix')))]",
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "logAnalyticsWorkspaceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Log Analytics Workspace ID"
+      },
+      "value": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsWorkspaceName'))]"
+    },
+    "logAnalyticsWorkspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Log Analytics Workspace Name"
+      },
+      "value": "[variables('logAnalyticsWorkspaceName')]"
+    },
+    "appInsightsId": {
+      "type": "string",
+      "metadata": {
+        "description": "Application Insights ID"
+      },
+      "value": "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]"
+    },
+    "appInsightsInstrumentationKey": {
+      "type": "string",
+      "metadata": {
+        "description": "Application Insights Instrumentation Key"
+      },
+      "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').InstrumentationKey]"
+    },
+    "appInsightsConnectionString": {
+      "type": "string",
+      "metadata": {
+        "description": "Application Insights Connection String"
+      },
+      "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString]"
+    },
+    "actionGroupId": {
+      "type": "string",
+      "metadata": {
+        "description": "Action Group ID"
+      },
+      "value": "[resourceId('Microsoft.Insights/actionGroups', format('ag-{0}', variables('resourceNamePrefix')))]"
+    }
+  }
+}

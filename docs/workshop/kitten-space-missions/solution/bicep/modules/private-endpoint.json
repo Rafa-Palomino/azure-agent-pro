@@ -1,0 +1,196 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.39.26.7824",
+      "templateHash": "4794545400640461323"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure region for resources"
+      }
+    },
+    "projectName": {
+      "type": "string",
+      "metadata": {
+        "description": "Project name"
+      }
+    },
+    "workloadName": {
+      "type": "string",
+      "metadata": {
+        "description": "Workload name"
+      }
+    },
+    "environment": {
+      "type": "string",
+      "metadata": {
+        "description": "Environment name"
+      }
+    },
+    "tags": {
+      "type": "object",
+      "metadata": {
+        "description": "Resource tags"
+      }
+    },
+    "serviceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Service name for PE (sql, keyvault, blob, etc.)"
+      }
+    },
+    "privateLinkServiceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Private Link Service Resource ID"
+      }
+    },
+    "groupId": {
+      "type": "string",
+      "metadata": {
+        "description": "Group ID for the service (sqlServer, vault, blob, etc.)"
+      }
+    },
+    "subnetId": {
+      "type": "string",
+      "metadata": {
+        "description": "Subnet ID where PE will be deployed"
+      }
+    },
+    "vnetId": {
+      "type": "string",
+      "metadata": {
+        "description": "Virtual Network ID for DNS zone linking"
+      }
+    }
+  },
+  "variables": {
+    "resourceNamePrefix": "[format('{0}-{1}-{2}', parameters('projectName'), parameters('workloadName'), parameters('environment'))]",
+    "peConnectionName": "[format('pec-{0}-{1}', parameters('serviceName'), variables('resourceNamePrefix'))]",
+    "peName": "[format('pe-{0}-{1}', parameters('serviceName'), variables('resourceNamePrefix'))]",
+    "dnsZoneNames": {
+      "sqlServer": "privatelink.database.windows.net",
+      "vault": "privatelink.vaultcore.azure.net",
+      "blob": "privatelink.blob.core.windows.net",
+      "file": "privatelink.file.core.windows.net",
+      "queue": "privatelink.queue.core.windows.net",
+      "table": "privatelink.table.core.windows.net",
+      "sites": "privatelink.azurewebsites.net",
+      "database": "privatelink.database.windows.net"
+    },
+    "dnsZoneName": "[variables('dnsZoneNames')[parameters('groupId')]]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('peName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "privateLinkServiceConnections": [
+          {
+            "name": "[variables('peConnectionName')]",
+            "properties": {
+              "privateLinkServiceId": "[parameters('privateLinkServiceId')]",
+              "groupIds": [
+                "[parameters('groupId')]"
+              ],
+              "requestMessage": "",
+              "privateLinkServiceConnectionState": {
+                "status": "Approved",
+                "description": "Auto-approved",
+                "actionsRequired": "None"
+              }
+            }
+          }
+        ],
+        "manualPrivateLinkServiceConnections": [],
+        "subnet": {
+          "id": "[parameters('subnetId')]"
+        },
+        "customDnsConfigs": [],
+        "ipConfigurations": []
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2020-06-01",
+      "name": "[variables('dnsZoneName')]",
+      "location": "global",
+      "tags": "[parameters('tags')]",
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2020-06-01",
+      "name": "[format('{0}/{1}', variables('dnsZoneName'), format('link-{0}', parameters('environment')))]",
+      "location": "global",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[parameters('vnetId')]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('dnsZoneName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('peName'), 'default')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "[variables('dnsZoneName')]",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', variables('dnsZoneName'))]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('dnsZoneName'))]",
+        "[resourceId('Microsoft.Network/privateEndpoints', variables('peName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "privateEndpointId": {
+      "type": "string",
+      "metadata": {
+        "description": "Private Endpoint ID"
+      },
+      "value": "[resourceId('Microsoft.Network/privateEndpoints', variables('peName'))]"
+    },
+    "privateEndpointName": {
+      "type": "string",
+      "metadata": {
+        "description": "Private Endpoint Name"
+      },
+      "value": "[variables('peName')]"
+    },
+    "privateDnsZoneId": {
+      "type": "string",
+      "metadata": {
+        "description": "Private DNS Zone ID"
+      },
+      "value": "[resourceId('Microsoft.Network/privateDnsZones', variables('dnsZoneName'))]"
+    },
+    "privateDnsZoneName": {
+      "type": "string",
+      "metadata": {
+        "description": "Private DNS Zone Name"
+      },
+      "value": "[variables('dnsZoneName')]"
+    }
+  }
+}

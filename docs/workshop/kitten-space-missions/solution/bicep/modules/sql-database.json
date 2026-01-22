@@ -1,0 +1,231 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.39.26.7824",
+      "templateHash": "10106179794384975142"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure region for resources"
+      }
+    },
+    "projectName": {
+      "type": "string",
+      "metadata": {
+        "description": "Project name"
+      }
+    },
+    "workloadName": {
+      "type": "string",
+      "metadata": {
+        "description": "Workload name"
+      }
+    },
+    "environment": {
+      "type": "string",
+      "metadata": {
+        "description": "Environment name"
+      }
+    },
+    "tags": {
+      "type": "object",
+      "metadata": {
+        "description": "Resource tags"
+      }
+    },
+    "adminLogin": {
+      "type": "string",
+      "metadata": {
+        "description": "SQL Server admin login"
+      }
+    },
+    "adminPassword": {
+      "type": "securestring",
+      "metadata": {
+        "description": "SQL Server admin password"
+      }
+    },
+    "databaseTier": {
+      "type": "string",
+      "defaultValue": "Basic",
+      "metadata": {
+        "description": "SQL Database tier (Basic, Standard, Premium)"
+      }
+    },
+    "logAnalyticsWorkspaceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Log Analytics Workspace ID for diagnostics"
+      }
+    }
+  },
+  "variables": {
+    "resourceNamePrefix": "[format('{0}-{1}-{2}', parameters('projectName'), parameters('workloadName'), parameters('environment'))]",
+    "sqlServerName": "[format('sqlsrv-{0}-{1}', variables('resourceNamePrefix'), uniqueString(resourceGroup().id))]",
+    "sqlDatabaseName": "[format('sqldb-{0}', variables('resourceNamePrefix'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Sql/servers",
+      "apiVersion": "2023-05-01-preview",
+      "name": "[variables('sqlServerName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "administratorLogin": "[parameters('adminLogin')]",
+        "administratorLoginPassword": "[parameters('adminPassword')]",
+        "version": "12.0",
+        "minimalTlsVersion": "1.2",
+        "publicNetworkAccess": "Disabled",
+        "restrictOutboundNetworkAccess": "Disabled",
+        "primaryUserAssignedIdentityId": null,
+        "keyId": null,
+        "administrators": {
+          "login": "AzureAD Admin",
+          "sid": "00000000-0000-0000-0000-000000000000",
+          "tenantId": "[subscription().tenantId]",
+          "principalType": "Group"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers/firewallRules",
+      "apiVersion": "2023-05-01-preview",
+      "name": "[format('{0}/{1}', variables('sqlServerName'), 'AllowAzureServices')]",
+      "properties": {
+        "startIpAddress": "0.0.0.0",
+        "endIpAddress": "0.0.0.0"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2023-05-01-preview",
+      "name": "[format('{0}/{1}', variables('sqlServerName'), variables('sqlDatabaseName'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "name": "[parameters('databaseTier')]",
+        "tier": "[parameters('databaseTier')]"
+      },
+      "properties": {
+        "collation": "SQL_Latin1_General_CP1_CI_AS",
+        "maxSizeBytes": "[if(equals(parameters('databaseTier'), 'Basic'), 104857600, if(equals(parameters('databaseTier'), 'Standard'), 268435456, json('1099511627776')))]",
+        "createMode": "Default",
+        "zoneRedundant": false,
+        "transparentDataEncryption": "Enabled",
+        "isLedgerOn": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Sql/servers/databases/transparentDataEncryption",
+      "apiVersion": "2023-05-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('sqlServerName'), variables('sqlDatabaseName'), 'current')]",
+      "properties": {
+        "state": "Enabled"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers/databases', variables('sqlServerName'), variables('sqlDatabaseName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "scope": "[format('Microsoft.Sql/servers/{0}/databases/{1}', variables('sqlServerName'), variables('sqlDatabaseName'))]",
+      "name": "[format('{0}-diagnostics', variables('sqlDatabaseName'))]",
+      "properties": {
+        "workspaceId": "[parameters('logAnalyticsWorkspaceId')]",
+        "logs": [
+          {
+            "category": "SQLSecurityAuditEvents",
+            "enabled": true,
+            "retentionPolicy": {
+              "enabled": true,
+              "days": 30
+            }
+          },
+          {
+            "category": "SQLInsights",
+            "enabled": true,
+            "retentionPolicy": {
+              "enabled": true,
+              "days": 30
+            }
+          },
+          {
+            "category": "Errors",
+            "enabled": true,
+            "retentionPolicy": {
+              "enabled": true,
+              "days": 30
+            }
+          }
+        ],
+        "metrics": [
+          {
+            "category": "Basic",
+            "enabled": true,
+            "retentionPolicy": {
+              "enabled": true,
+              "days": 30
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers/databases', variables('sqlServerName'), variables('sqlDatabaseName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "sqlServerId": {
+      "type": "string",
+      "metadata": {
+        "description": "SQL Server ID"
+      },
+      "value": "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+    },
+    "sqlServerName": {
+      "type": "string",
+      "metadata": {
+        "description": "SQL Server Name"
+      },
+      "value": "[variables('sqlServerName')]"
+    },
+    "sqlServerFqdn": {
+      "type": "string",
+      "metadata": {
+        "description": "SQL Server FQDN"
+      },
+      "value": "[reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName')), '2023-05-01-preview').fullyQualifiedDomainName]"
+    },
+    "sqlDatabaseId": {
+      "type": "string",
+      "metadata": {
+        "description": "SQL Database ID"
+      },
+      "value": "[resourceId('Microsoft.Sql/servers/databases', variables('sqlServerName'), variables('sqlDatabaseName'))]"
+    },
+    "sqlDatabaseName": {
+      "type": "string",
+      "metadata": {
+        "description": "SQL Database Name"
+      },
+      "value": "[variables('sqlDatabaseName')]"
+    }
+  }
+}

@@ -1,0 +1,348 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.39.26.7824",
+      "templateHash": "2575029605304623495"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure region for resources"
+      }
+    },
+    "projectName": {
+      "type": "string",
+      "metadata": {
+        "description": "Project name"
+      }
+    },
+    "workloadName": {
+      "type": "string",
+      "metadata": {
+        "description": "Workload name"
+      }
+    },
+    "environment": {
+      "type": "string",
+      "metadata": {
+        "description": "Environment name"
+      }
+    },
+    "tags": {
+      "type": "object",
+      "metadata": {
+        "description": "Resource tags"
+      }
+    },
+    "appServicePlanSku": {
+      "type": "string",
+      "defaultValue": "B1",
+      "metadata": {
+        "description": "App Service Plan SKU (B1, B2, S1, etc.)"
+      }
+    },
+    "vnetSubnetId": {
+      "type": "string",
+      "metadata": {
+        "description": "VNet Subnet ID for VNet integration"
+      }
+    },
+    "keyVaultUri": {
+      "type": "string",
+      "metadata": {
+        "description": "Key Vault URI"
+      }
+    },
+    "logAnalyticsWorkspaceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Log Analytics Workspace ID"
+      }
+    },
+    "appInsightsInstrumentationKey": {
+      "type": "string",
+      "metadata": {
+        "description": "Application Insights Instrumentation Key"
+      }
+    },
+    "sqlServerFqdn": {
+      "type": "string",
+      "metadata": {
+        "description": "SQL Server FQDN"
+      }
+    },
+    "sqlDatabaseName": {
+      "type": "string",
+      "metadata": {
+        "description": "SQL Database Name"
+      }
+    },
+    "sqlServerResourceId": {
+      "type": "string",
+      "metadata": {
+        "description": "SQL Server Resource ID (for RBAC)"
+      }
+    }
+  },
+  "variables": {
+    "resourceNamePrefix": "[format('{0}-{1}-{2}', parameters('projectName'), parameters('workloadName'), parameters('environment'))]",
+    "appServicePlanName": "[format('plan-{0}', variables('resourceNamePrefix'))]",
+    "appServiceName": "[format('app-{0}', variables('resourceNamePrefix'))]",
+    "appServiceUri": "[format('https://{0}.azurewebsites.net', variables('appServiceName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('appServicePlanName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "name": "[parameters('appServicePlanSku')]",
+        "tier": "[if(or(or(equals(parameters('appServicePlanSku'), 'B1'), equals(parameters('appServicePlanSku'), 'B2')), equals(parameters('appServicePlanSku'), 'B3')), 'Basic', if(or(or(equals(parameters('appServicePlanSku'), 'S1'), equals(parameters('appServicePlanSku'), 'S2')), equals(parameters('appServicePlanSku'), 'S3')), 'Standard', 'Premium'))]"
+      },
+      "kind": "Linux",
+      "properties": {
+        "reserved": true
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('appServiceName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "httpsOnly": true,
+        "virtualNetworkSubnetId": "[parameters('vnetSubnetId')]",
+        "vnetRouteAllEnabled": true,
+        "siteConfig": {
+          "linuxFxVersion": "DOTNETCORE|8.0",
+          "minTlsVersion": "1.2",
+          "http20Enabled": true,
+          "alwaysOn": true,
+          "numberOfWorkers": 1,
+          "defaultDocuments": [],
+          "appSettings": [
+            {
+              "name": "WEBSITES_ENABLE_APP_SERVICE_STORAGE",
+              "value": "false"
+            },
+            {
+              "name": "ASPNETCORE_ENVIRONMENT",
+              "value": "[if(equals(parameters('environment'), 'prod'), 'Production', 'Development')]"
+            },
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[format('InstrumentationKey={0}', parameters('appInsightsInstrumentationKey'))]"
+            },
+            {
+              "name": "ApplicationInsightsAgent_EXTENSION_VERSION",
+              "value": "~3"
+            },
+            {
+              "name": "XDT_MicrosoftApplicationInsights_Mode",
+              "value": "recommended"
+            },
+            {
+              "name": "KeyVault:Uri",
+              "value": "[parameters('keyVaultUri')]"
+            },
+            {
+              "name": "Sql:Server",
+              "value": "[parameters('sqlServerFqdn')]"
+            },
+            {
+              "name": "Sql:Database",
+              "value": "[parameters('sqlDatabaseName')]"
+            },
+            {
+              "name": "Sql:Authentication",
+              "value": "ManagedIdentity"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites/virtualNetworkConnections",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/{1}', variables('appServiceName'), 'VNet')]",
+      "properties": {
+        "vnetResourceId": "[parameters('vnetSubnetId')]",
+        "isSwift": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('appServiceName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "scope": "[format('Microsoft.Web/sites/{0}', variables('appServiceName'))]",
+      "name": "[format('{0}-diagnostics', variables('appServiceName'))]",
+      "properties": {
+        "workspaceId": "[parameters('logAnalyticsWorkspaceId')]",
+        "logs": [
+          {
+            "category": "AppServiceHTTPLogs",
+            "enabled": true,
+            "retentionPolicy": {
+              "enabled": true,
+              "days": 30
+            }
+          },
+          {
+            "category": "AppServiceConsoleLogs",
+            "enabled": true,
+            "retentionPolicy": {
+              "enabled": true,
+              "days": 7
+            }
+          },
+          {
+            "category": "AppServiceApplicationLogs",
+            "enabled": true,
+            "retentionPolicy": {
+              "enabled": true,
+              "days": 7
+            }
+          },
+          {
+            "category": "AppServicePlatformLogs",
+            "enabled": true,
+            "retentionPolicy": {
+              "enabled": true,
+              "days": 7
+            }
+          }
+        ],
+        "metrics": [
+          {
+            "category": "AllMetrics",
+            "enabled": true,
+            "retentionPolicy": {
+              "enabled": true,
+              "days": 30
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('appServiceName'))]"
+      ]
+    },
+    {
+      "condition": "[not(equals(parameters('appServicePlanSku'), 'B1'))]",
+      "type": "Microsoft.Insights/autoscalesettings",
+      "apiVersion": "2015-04-01",
+      "name": "[format('{0}-autoscale', variables('appServicePlanName'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "enabled": true,
+        "targetResourceUri": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "profiles": [
+          {
+            "name": "Auto scale based on CPU",
+            "capacity": {
+              "minimum": "1",
+              "maximum": "3",
+              "default": "1"
+            },
+            "rules": [
+              {
+                "metricTrigger": {
+                  "metricName": "CpuPercentage",
+                  "metricResourceUri": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+                  "timeGrain": "PT1M",
+                  "statistic": "Average",
+                  "timeWindow": "PT5M",
+                  "timeAggregation": "Average",
+                  "operator": "GreaterThan",
+                  "threshold": 70
+                },
+                "scaleAction": {
+                  "direction": "Increase",
+                  "type": "ChangeCount",
+                  "value": "1",
+                  "cooldown": "PT5M"
+                }
+              },
+              {
+                "metricTrigger": {
+                  "metricName": "CpuPercentage",
+                  "metricResourceUri": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+                  "timeGrain": "PT1M",
+                  "statistic": "Average",
+                  "timeWindow": "PT5M",
+                  "timeAggregation": "Average",
+                  "operator": "LessThan",
+                  "threshold": 30
+                },
+                "scaleAction": {
+                  "direction": "Decrease",
+                  "type": "ChangeCount",
+                  "value": "1",
+                  "cooldown": "PT5M"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "appServiceId": {
+      "type": "string",
+      "metadata": {
+        "description": "App Service ID"
+      },
+      "value": "[resourceId('Microsoft.Web/sites', variables('appServiceName'))]"
+    },
+    "appServiceName": {
+      "type": "string",
+      "metadata": {
+        "description": "App Service Name"
+      },
+      "value": "[variables('appServiceName')]"
+    },
+    "appServiceUri": {
+      "type": "string",
+      "metadata": {
+        "description": "App Service URI"
+      },
+      "value": "[variables('appServiceUri')]"
+    },
+    "managedIdentityPrincipalId": {
+      "type": "string",
+      "metadata": {
+        "description": "Managed Identity Principal ID"
+      },
+      "value": "[reference(resourceId('Microsoft.Web/sites', variables('appServiceName')), '2023-01-01', 'full').identity.principalId]"
+    },
+    "appServicePlanId": {
+      "type": "string",
+      "metadata": {
+        "description": "App Service Plan ID"
+      },
+      "value": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]"
+    }
+  }
+}

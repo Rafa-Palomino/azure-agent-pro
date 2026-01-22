@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environment": {
+      "value": "prod"
+    },
+    "location": {
+      "value": "westeurope"
+    },
+    "projectName": {
+      "value": "kitten-missions"
+    },
+    "workloadName": {
+      "value": "api"
+    },
+    "tags": {
+      "value": {
+        "Environment": "Production",
+        "Project": "Kitten Space Missions",
+        "ManagedBy": "Bicep",
+        "CostCenter": "Operations",
+        "CreatedDate": "2026-01-22",
+        "Owner": "OpsTeam",
+        "Criticality": "High",
+        "BackupRequired": "true"
+      }
+    },
+    "sqlAdminLogin": {
+      "value": "sqladmin"
+    },
+    "sqlAdminPassword": {
+      "reference": {
+        "keyVault": {
+          "id": "/subscriptions/{subscriptionId}/resourceGroups/rg-secrets/providers/Microsoft.KeyVault/vaults/kv-secrets-prod"
+        },
+        "secretName": "sql-admin-password-prod"
+      }
+    },
+    "appServiceSku": {
+      "value": "S1"
+    },
+    "sqlDatabaseTier": {
+      "value": "Standard"
+    },
+    "enableAutoShutdown": {
+      "value": false
+    },
+    "logAnalyticsRetentionDays": {
+      "value": 30
+    }
+  }
+}
