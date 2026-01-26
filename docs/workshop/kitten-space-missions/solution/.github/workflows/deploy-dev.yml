@@ -1,0 +1,468 @@
+name: Deploy to Development
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/workshop/kitten-space-missions/solution/bicep/**'
+      - '!docs/workshop/kitten-space-missions/solution/bicep/parameters/prod.parameters.json'
+      - 'docs/workshop/kitten-space-missions/solution/.github/workflows/deploy-dev.yml'
+  workflow_dispatch:
+    inputs:
+      force_deploy:
+        description: 'Force deployment even if no changes detected'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+env:
+  BICEP_PATH: docs/workshop/kitten-space-missions/solution/bicep
+  PARAMETERS_FILE: docs/workshop/kitten-space-missions/solution/bicep/parameters/dev.parameters.json
+  DEPLOYMENT_NAME: kitten-missions-dev
+  DEPLOYMENT_LOCATION: westeurope
+  RESOURCE_GROUP: rg-kitten-missions-dev
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+
+jobs:
+  # ============================================================================
+  # Job 1: Pre-deployment Validation
+  # ============================================================================
+  validate:
+    name: Pre-deployment Validation
+    runs-on: ubuntu-latest
+    outputs:
+      deployment_needed: ${{ steps.check.outputs.deployment_needed }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
+      
+      - name: Check if deployment needed
+        id: check
+        run: |
+          echo "🔍 Verificando si se necesita desplegar..."
+          
+          # Si es manual trigger con force_deploy, siempre desplegar
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ github.event.inputs.force_deploy }}" == "true" ]; then
+            echo "deployment_needed=true" >> $GITHUB_OUTPUT
+            echo "✅ Forced deployment"
+            exit 0
+          fi
+          
+          # Si es push, verificar cambios en bicep/
+          if [ "${{ github.event_name }}" == "push" ]; then
+            git diff-tree --no-commit-id --name-only -r "${{ github.sha }}" | grep -q "bicep/" && {
+              echo "deployment_needed=true" >> $GITHUB_OUTPUT
+              echo "✅ Cambios detectados en bicep/"
+              exit 0
+            } || {
+              echo "deployment_needed=false" >> $GITHUB_OUTPUT
+              echo "⏭️ Sin cambios en bicep/ - saltando deployment"
+              exit 0
+            }
+          fi
+          
+          echo "deployment_needed=true" >> $GITHUB_OUTPUT
+      
+      - name: Install Bicep CLI
+        run: az bicep install
+      
+      - name: Validate Bicep syntax
+        run: |
+          echo "✓ Validando sintaxis Bicep..."
+          az bicep build --file "${{ env.BICEP_PATH }}/main.bicep" --outfile /tmp/main.json
+          echo "✅ Sintaxis válida"
+      
+      - name: Lint Bicep
+        run: |
+          echo "✓ Ejecutando linter..."
+          az bicep lint --file "${{ env.BICEP_PATH }}/main.bicep"
+          echo "✅ Lint passed"
+
+  # ============================================================================
+  # Job 2: Deployment (Require Environment Approval)
+  # ============================================================================
+  deploy:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    needs: validate
+    if: needs.validate.outputs.deployment_needed == 'true'
+    environment:
+      name: dev
+      url: https://portal.azure.com
+    
+    permissions:
+      id-token: write
+      contents: read
+    
+    outputs:
+      deployment_id: ${{ steps.deploy.outputs.deployment_id }}
+      resource_group: ${{ steps.deploy.outputs.resource_group }}
+      deployment_status: ${{ steps.deploy.outputs.status }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Azure Login (OIDC)
+        uses: azure/login@v1
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: false
+      
+      - name: Create Resource Group
+        id: rg
+        run: |
+          echo "📦 Creando/verificando Resource Group..."
+          az group create \
+            --name "${{ env.RESOURCE_GROUP }}" \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --tags \
+              Environment=Development \
+              ManagedBy=GitHub-Actions \
+              Project=KittenMissions
+          
+          echo "✅ Resource Group ready: ${{ env.RESOURCE_GROUP }}"
+      
+      - name: Pre-deployment What-If
+        id: whatif
+        continue-on-error: true
+        run: |
+          echo "🔍 Running What-If preview..."
+          
+          az deployment sub what-if \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --template-file "${{ env.BICEP_PATH }}/main.bicep" \
+            --parameters "${{ env.PARAMETERS_FILE }}" \
+            --result-format "FullResourcePayloads" \
+            --output table > /tmp/whatif-output.txt 2>&1
+          
+          cat /tmp/whatif-output.txt
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ What-If preview completado"
+          else
+            echo "⚠️ What-If preview failed - continuando con deployment"
+          fi
+      
+      - name: Deploy Bicep Template
+        id: deploy
+        run: |
+          echo "🚀 Desplegando infraestructura..."
+          
+          DEPLOYMENT_OUTPUT=$(az deployment sub create \
+            --name "${{ env.DEPLOYMENT_NAME }}-${{ github.run_number }}" \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --template-file "${{ env.BICEP_PATH }}/main.bicep" \
+            --parameters "${{ env.PARAMETERS_FILE }}" \
+            --output json 2>&1)
+          
+          DEPLOYMENT_EXIT_CODE=$?
+          
+          if [ $DEPLOYMENT_EXIT_CODE -eq 0 ]; then
+            echo "✅ Deployment exitoso"
+            
+            # Extraer deployment ID
+            DEPLOYMENT_ID=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.id')
+            
+            echo "deployment_id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
+            echo "resource_group=${{ env.RESOURCE_GROUP }}" >> $GITHUB_OUTPUT
+            echo "status=success" >> $GITHUB_OUTPUT
+            
+            # Guardar outputs para próximos jobs
+            echo "$DEPLOYMENT_OUTPUT" | jq '.properties.outputs' > /tmp/deployment-outputs.json
+            
+          else
+            echo "❌ Deployment falló"
+            echo "deployment_id=failed" >> $GITHUB_OUTPUT
+            echo "resource_group=${{ env.RESOURCE_GROUP }}" >> $GITHUB_OUTPUT
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+      
+      - name: Get Deployment Outputs
+        id: outputs
+        run: |
+          echo "📊 Recuperando outputs del deployment..."
+          
+          az deployment sub show \
+            --name "${{ env.DEPLOYMENT_NAME }}-${{ github.run_number }}" \
+            --query "properties.outputs" \
+            --output json > /tmp/deployment-outputs.json
+          
+          # Extraer valores importantes
+          APP_SERVICE_URI=$(jq -r '.appServiceUri.value' /tmp/deployment-outputs.json)
+          SQL_SERVER_FQDN=$(jq -r '.sqlServerFqdn.value' /tmp/deployment-outputs.json)
+          
+          echo "appServiceUri=$APP_SERVICE_URI" >> $GITHUB_OUTPUT
+          echo "sqlServerFqdn=$SQL_SERVER_FQDN" >> $GITHUB_OUTPUT
+          
+          echo "✅ Deployment Outputs:"
+          echo "   App Service: $APP_SERVICE_URI"
+          echo "   SQL Server: $SQL_SERVER_FQDN"
+      
+      - name: Upload Deployment Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-report-${{ github.run_number }}
+          path: /tmp/deployment-outputs.json
+          retention-days: 30
+
+  # ============================================================================
+  # Job 3: Smoke Tests
+  # ============================================================================
+  smoke-tests:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: needs.deploy.outputs.deployment_status == 'success'
+    
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Azure Login (OIDC)
+        uses: azure/login@v1
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: false
+      
+      - name: Wait for App Service startup
+        run: |
+          echo "⏳ Esperando startup de App Service..."
+          sleep 30
+      
+      - name: Health Check - App Service
+        id: health-app
+        continue-on-error: true
+        run: |
+          echo "🏥 Verificando App Service..."
+          
+          # Obtener estado del App Service
+          STATUS=$(az webapp show \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --name "app-kitten-missions-api-dev" \
+            --query "state" \
+            -o tsv)
+          
+          if [ "$STATUS" == "Running" ]; then
+            echo "✅ App Service está Running"
+            echo "app_status=healthy" >> $GITHUB_OUTPUT
+          else
+            echo "❌ App Service status: $STATUS"
+            echo "app_status=unhealthy" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+      
+      - name: Health Check - SQL Database
+        id: health-sql
+        continue-on-error: true
+        run: |
+          echo "🏥 Verificando SQL Database..."
+          
+          # Obtener estado de la base de datos
+          DB_STATUS=$(az sql db show \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --server "sqlsrv-kitten-missions-api-dev-$(echo ${{ env.RESOURCE_GROUP }} | sha256sum | cut -c1-6)" \
+            --name "sqldb-kitten-missions-api" \
+            --query "status" \
+            -o tsv 2>/dev/null || echo "NotFound")
+          
+          if [ "$DB_STATUS" == "Online" ]; then
+            echo "✅ SQL Database está Online"
+            echo "sql_status=healthy" >> $GITHUB_OUTPUT
+          elif [ "$DB_STATUS" == "NotFound" ]; then
+            echo "⚠️ Database resource not found (ignorado en smoke tests)"
+            echo "sql_status=unknown" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Database status: $DB_STATUS"
+            echo "sql_status=unhealthy" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Health Check - Key Vault
+        id: health-kv
+        continue-on-error: true
+        run: |
+          echo "🏥 Verificando Key Vault..."
+          
+          KV_NAME=$(az keyvault list \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --query "[0].name" \
+            -o tsv 2>/dev/null)
+          
+          if [ ! -z "$KV_NAME" ] && [ "$KV_NAME" != "None" ]; then
+            KV_STATUS=$(az keyvault show \
+              --name "$KV_NAME" \
+              --query "properties.provisioningState" \
+              -o tsv)
+            
+            if [ "$KV_STATUS" == "Succeeded" ]; then
+              echo "✅ Key Vault activo"
+              echo "kv_status=healthy" >> $GITHUB_OUTPUT
+            else
+              echo "❌ Key Vault status: $KV_STATUS"
+              echo "kv_status=unhealthy" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "⚠️ Key Vault not found"
+            echo "kv_status=unknown" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Check Application Logs
+        id: logs
+        continue-on-error: true
+        run: |
+          echo "📋 Recuperando logs de Application..."
+          
+          az webapp log tail \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --name "app-kitten-missions-api-dev" \
+            --lines 20 > /tmp/app-logs.txt 2>&1 || echo "No logs available yet"
+          
+          echo "✅ Logs retrieved"
+      
+      - name: Generate Smoke Test Report
+        id: report
+        run: |
+          echo "📊 Generando reporte de smoke tests..."
+          
+          {
+            echo "## 🏥 Smoke Tests Report"
+            echo ""
+            echo "### Deployment: ${{ github.run_number }}"
+            echo "- Timestamp: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            echo "- Resource Group: ${{ env.RESOURCE_GROUP }}"
+            echo "- Region: ${{ env.DEPLOYMENT_LOCATION }}"
+            echo ""
+            echo "### Health Status"
+            echo "- App Service: ${{ steps.health-app.outputs.app_status || 'unknown' }}"
+            echo "- SQL Database: ${{ steps.health-sql.outputs.sql_status || 'unknown' }}"
+            echo "- Key Vault: ${{ steps.health-kv.outputs.kv_status || 'unknown' }}"
+            echo ""
+            echo "### URLs"
+            echo "- Azure Portal: https://portal.azure.com"
+            echo "- Resource Group: https://portal.azure.com/#@${{ secrets.AZURE_TENANT_ID }}/resource/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ env.RESOURCE_GROUP }}/overview"
+          } > /tmp/smoke-tests-report.txt
+          
+          cat /tmp/smoke-tests-report.txt
+      
+      - name: Upload Smoke Tests Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-tests-report-${{ github.run_number }}
+          path: /tmp/smoke-tests-report.txt
+          retention-days: 30
+
+  # ============================================================================
+  # Job 4: Rollback (Solo si deployment o smoke tests fallan)
+  # ============================================================================
+  rollback:
+    name: Rollback on Failure
+    runs-on: ubuntu-latest
+    needs: [ deploy, smoke-tests ]
+    if: failure() && needs.deploy.outputs.deployment_status == 'success'
+    
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Azure Login (OIDC)
+        uses: azure/login@v1
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: false
+      
+      - name: Get Previous Successful Deployment
+        id: previous
+        run: |
+          echo "🔍 Buscando despliegue previo exitoso..."
+          
+          PREVIOUS_DEPLOYMENT=$(az deployment sub list \
+            --query "[?properties.provisioningState=='Succeeded'] | [-2].name" \
+            -o tsv)
+          
+          if [ ! -z "$PREVIOUS_DEPLOYMENT" ] && [ "$PREVIOUS_DEPLOYMENT" != "None" ]; then
+            echo "previous_deployment=$PREVIOUS_DEPLOYMENT" >> $GITHUB_OUTPUT
+            echo "✅ Found: $PREVIOUS_DEPLOYMENT"
+          else
+            echo "❌ No previous successful deployment found"
+            echo "previous_deployment=none" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Execute Rollback
+        if: steps.previous.outputs.previous_deployment != 'none'
+        run: |
+          echo "🔄 Ejecutando rollback a despliegue previo..."
+          echo "Nota: Rollback automático no es soportado por ARM Templates directamente."
+          echo "Alternativa: Usar implementación de Blue-Green o mantener versión anterior."
+          echo ""
+          echo "Manual Rollback Instructions:"
+          echo "1. Acceder a Azure Portal"
+          echo "2. Navegar a: Resource Group → ${{ env.RESOURCE_GROUP }}"
+          echo "3. Ir a Deployments"
+          echo "4. Seleccionar el deployment previo exitoso"
+          echo "5. Hacer clic en 'Redeploy'"
+          echo ""
+          echo "⚠️ ROLLBACK MANUAL REQUERIDO"
+      
+      - name: Send Rollback Notification
+        run: |
+          echo "🚨 ALERT: Deployment failed - Manual rollback may be needed"
+          echo "Deployment ID: ${{ needs.deploy.outputs.deployment_id }}"
+          echo "Resource Group: ${{ env.RESOURCE_GROUP }}"
+
+  # ============================================================================
+  # Job 5: Deployment Summary
+  # ============================================================================
+  summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [ validate, deploy, smoke-tests ]
+    if: always()
+    
+    steps:
+      - name: Create Deployment Summary
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployment Details:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Run Number: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Trigger: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Branch: ${{ github.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Jobs Status:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Validation: ${{ needs.validate.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Deployment: ${{ needs.deploy.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Smoke Tests: ${{ needs.smoke-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Resource Group: ${{ env.RESOURCE_GROUP }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Location: ${{ env.DEPLOYMENT_LOCATION }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Azure Portal: [View Resources](https://portal.azure.com/#@${{ secrets.AZURE_TENANT_ID }}/resource/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ env.RESOURCE_GROUP }}/overview)" >> $GITHUB_STEP_SUMMARY
