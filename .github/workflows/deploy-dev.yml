@@ -142,6 +142,11 @@ jobs:
             echo "$DEPLOYMENT_OUTPUT" | jq '.properties.outputs' > /tmp/deployment-outputs.json
           else
             echo "❌ Deployment falló"
+            echo ""
+            echo "==================== AZURE ERROR DETAILS ===================="
+            echo "$DEPLOYMENT_OUTPUT"
+            echo "============================================================="
+            echo ""
             echo "deployment_id=failed" >> $GITHUB_OUTPUT
             echo "resource_group=${{ env.RESOURCE_GROUP }}" >> $GITHUB_OUTPUT
             echo "status=failed" >> $GITHUB_OUTPUT
