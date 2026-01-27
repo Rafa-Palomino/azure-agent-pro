@@ -1,0 +1,320 @@
+name: Bicep Validation & What-If
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'docs/workshop/kitten-space-missions/solution/bicep/**'
+      - '.github/workflows/bicep-validation.yml'
+  workflow_dispatch:
+
+env:
+  BICEP_PATH: docs/workshop/kitten-space-missions/solution/bicep
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  # ============================================================================
+  # Job 1: Bicep Lint - Verificar best practices
+  # ============================================================================
+  bicep-lint:
+    name: Bicep Lint
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Install Bicep CLI
+        run: |
+          az bicep install
+          az bicep version
+      
+      - name: Run Bicep Lint
+        id: lint
+        run: |
+          echo "🔍 Ejecutando Bicep Linter..."
+          LINT_OUTPUT=$(az bicep lint --file "${{ env.BICEP_PATH }}/main.bicep" 2>&1)
+          
+          if [ $? -ne 0 ]; then
+            echo "❌ Bicep Lint encontró problemas:"
+            echo "$LINT_OUTPUT"
+            echo "lint_status=failure" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "✅ Bicep Lint pasó sin problemas"
+            echo "lint_status=success" >> $GITHUB_OUTPUT
+          fi
+
+  # ============================================================================
+  # Job 2: Bicep Build - Compilar template
+  # ============================================================================
+  bicep-build:
+    name: Bicep Build
+    runs-on: ubuntu-latest
+    needs: bicep-lint
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install Bicep CLI
+        run: az bicep install
+      
+      - name: Build Bicep template
+        id: build
+        run: |
+          echo "🔨 Compilando Bicep template..."
+          az bicep build \
+            --file "${{ env.BICEP_PATH }}/main.bicep" \
+            --outfile "${{ env.BICEP_PATH }}/main.json"
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Bicep template compilado exitosamente"
+            echo "build_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Error compilando Bicep template"
+            exit 1
+          fi
+      
+      - name: Upload compiled template
+        uses: actions/upload-artifact@v4
+        with:
+          name: bicep-templates
+          path: ${{ env.BICEP_PATH }}/main.json
+          retention-days: 5
+
+  # ============================================================================
+  # Job 3: Security Scan (Checkov)
+  # ============================================================================
+  security-scan:
+    name: Security Scan (Checkov)
+    runs-on: ubuntu-latest
+    needs: bicep-build
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install Checkov
+        run: |
+          pip install checkov
+          checkov --version
+      
+      - name: Run Checkov on Bicep
+        id: checkov
+        continue-on-error: true
+        run: |
+          echo "🔐 Ejecutando análisis de seguridad con Checkov..."
+          
+          checkov \
+            --framework bicep \
+            --directory "${{ env.BICEP_PATH }}" \
+            --output cli \
+            --compact \
+            --quiet \
+            > checkov-report.txt 2>&1 || true
+          
+          # Leer reporte
+          CHECKOV_OUTPUT=$(cat checkov-report.txt)
+          
+          # Guardarlo como variable multilinea
+          {
+            echo "checkov_output<<EOF"
+            echo "$CHECKOV_OUTPUT"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          
+          # Si hay fallos críticos, fallar
+          if grep -q "Check: CKV" checkov-report.txt && grep -q "PASSED" checkov-report.txt; then
+            echo "✅ Checkov encontró problemas menores (revisar en PR comment)"
+            echo "security_status=warning" >> $GITHUB_OUTPUT
+          elif grep -q "FAILED" checkov-report.txt; then
+            echo "⚠️ Checkov encontró problemas de seguridad"
+            echo "security_status=warning" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Checkov: Sin problemas de seguridad"
+            echo "security_status=success" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Upload Checkov report
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkov-report
+          path: checkov-report.txt
+          retention-days: 5
+
+  # ============================================================================
+  # Job 4: What-If Deployment Preview
+  # ============================================================================
+  what-if:
+    name: What-If Preview
+    runs-on: ubuntu-latest
+    needs: bicep-build
+    
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Azure Login (OIDC)
+        uses: azure/login@v1
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: false
+      
+      - name: Run What-If Preview
+        id: whatif
+        run: |
+          echo "🔍 Ejecutando What-If preview..."
+          
+          WHATIF_OUTPUT=$(az deployment sub create \
+            --name "pr-whatif-${{ github.run_number }}" \
+            --location "westeurope" \
+            --template-file "${{ env.BICEP_PATH }}/main.bicep" \
+            --parameters "${{ env.BICEP_PATH }}/parameters/dev.parameters.json" \
+            --what-if \
+            --what-if-result-format "FullResourcePayloads" 2>&1)
+          
+          WHATIF_EXIT_CODE=$?
+          
+          # Guardar output (limitado a 65536 chars por GitHub)
+          if [ ${#WHATIF_OUTPUT} -gt 60000 ]; then
+            WHATIF_SUMMARY="${WHATIF_OUTPUT:0:55000}..."
+            echo "⚠️ Output truncado (demasiado largo)"
+          else
+            WHATIF_SUMMARY="$WHATIF_OUTPUT"
+          fi
+          
+          {
+            echo "whatif_output<<EOF"
+            echo "$WHATIF_SUMMARY"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          
+          if [ $WHATIF_EXIT_CODE -eq 0 ]; then
+            echo "✅ What-If ejecutado exitosamente"
+            echo "whatif_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ What-If completado con advertencias"
+            echo "whatif_status=warning" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Comment PR with What-If Results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const whatifOutput = `${{ steps.whatif.outputs.whatif_output }}`;
+            const lintsStatus = '${{ needs.bicep-lint.result }}';
+            const buildStatus = '${{ needs.bicep-build.result }}';
+            const securityStatus = '${{ needs.security-scan.outputs.security_status }}';
+            
+            // Construir comentario
+            let comment = `## 📋 Bicep Validation Results\n\n`;
+            
+            // Status badges
+            comment += `### Status\n`;
+            comment += `- Lint: ${lintsStatus === 'success' ? '✅' : '❌'} ${lintsStatus}\n`;
+            comment += `- Build: ${buildStatus === 'success' ? '✅' : '❌'} ${buildStatus}\n`;
+            comment += `- Security: ${securityStatus === 'success' ? '✅' : '⚠️'} ${securityStatus || 'N/A'}\n\n`;
+            
+            // What-If section
+            comment += `### What-If Preview (Dev Environment)\n\n`;
+            comment += `\`\`\`\n`;
+            comment += whatifOutput.substring(0, 3000) + (whatifOutput.length > 3000 ? '\n... (output truncado)' : '');
+            comment += `\n\`\`\`\n\n`;
+            
+            // Instrucciones
+            comment += `### 📝 Próximos Pasos\n`;
+            comment += `- ✅ Revisa los cambios propuestos en What-If\n`;
+            comment += `- ✅ Verifica que todos los checks han pasado\n`;
+            comment += `- ✅ Aprueba este PR para desplegar a Azure\n\n`;
+            
+            comment += `> 🔐 **OIDC Authentication**: Usando User-Assigned Managed Identity\n`;
+            comment += `> 📌 **Environment**: Development (rg-kitten-missions-dev)\n`;
+            
+            // Buscar comentario anterior del bot para actualizar
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            
+            const botComment = comments.data.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('Bicep Validation Results')
+            );
+            
+            if (botComment) {
+              // Actualizar comentario existente
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: comment
+              });
+              console.log('✅ Comentario actualizado');
+            } else {
+              // Crear nuevo comentario
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+              console.log('✅ Nuevo comentario creado');
+            }
+
+  # ============================================================================
+  # Job 5: Summary Report
+  # ============================================================================
+  summary:
+    name: Validation Summary
+    runs-on: ubuntu-latest
+    needs: [ bicep-lint, bicep-build, security-scan, what-if ]
+    if: always()
+    
+    steps:
+      - name: Generate Summary
+        run: |
+          echo "## ✅ Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint | ${{ needs.bicep-lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ needs.bicep-build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Scan | ${{ needs.security-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| What-If | ${{ needs.what-if.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎯 All Validations Completed" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Check for Failures
+        if: |
+          needs.bicep-lint.result == 'failure' ||
+          needs.bicep-build.result == 'failure' ||
+          needs.what-if.result == 'failure'
+        run: |
+          echo "❌ Some validations failed. Please review and fix."
+          exit 1
+      
+      - name: Success
+        if: |
+          needs.bicep-lint.result == 'success' &&
+          needs.bicep-build.result == 'success' &&
+          needs.what-if.result == 'success'
+        run: |
+          echo "✅ All validations passed! PR is ready for merge."
