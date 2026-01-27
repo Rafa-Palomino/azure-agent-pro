@@ -39,9 +39,6 @@ param appServiceSku string = 'B1'
 @description('SQL Database tier')
 param sqlDatabaseTier string = 'Basic'
 
-@description('Enable auto-shutdown for cost optimization (dev only)')
-param enableAutoShutdown bool = (environment == 'dev')
-
 @description('Log Analytics retention in days')
 param logAnalyticsRetentionDays int = (environment == 'dev') ? 7 : 30
 
@@ -132,9 +129,6 @@ module sqlDatabase 'modules/sql-database.bicep' = {
     databaseTier: sqlDatabaseTier
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
   }
-  dependsOn: [
-    monitoring
-  ]
 }
 
 // ============================================================================
@@ -156,9 +150,6 @@ module sqlPrivateEndpoint 'modules/private-endpoint.bicep' = {
     subnetId: networking.outputs.privateEndpointSubnetId
     vnetId: networking.outputs.vnetId
   }
-  dependsOn: [
-    sqlDatabase
-  ]
 }
 
 // ============================================================================
@@ -180,9 +171,6 @@ module kvPrivateEndpoint 'modules/private-endpoint.bicep' = {
     subnetId: networking.outputs.privateEndpointSubnetId
     vnetId: networking.outputs.vnetId
   }
-  dependsOn: [
-    keyVault
-  ]
 }
 
 // ============================================================================
@@ -207,12 +195,6 @@ module appService 'modules/app-service.bicep' = {
     sqlDatabaseName: sqlDatabase.outputs.sqlDatabaseName
     sqlServerResourceId: sqlDatabase.outputs.sqlServerId
   }
-  dependsOn: [
-    networking
-    keyVault
-    sqlDatabase
-    monitoring
-  ]
 }
 
 // ============================================================================
@@ -229,11 +211,6 @@ module rbac 'modules/rbac.bicep' = {
     keyVaultId: keyVault.outputs.keyVaultId
     tags: tags
   }
-  dependsOn: [
-    appService
-    sqlDatabase
-    keyVault
-  ]
 }
 
 // ============================================================================

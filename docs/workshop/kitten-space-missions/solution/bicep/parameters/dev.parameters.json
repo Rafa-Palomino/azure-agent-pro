@@ -28,12 +28,7 @@
       "value": "sqladmin"
     },
     "sqlAdminPassword": {
-      "reference": {
-        "keyVault": {
-          "id": "/subscriptions/{subscriptionId}/resourceGroups/rg-secrets/providers/Microsoft.KeyVault/vaults/kv-secrets"
-        },
-        "secretName": "sql-admin-password"
-      }
+      "value": "TempP@ssw0rd123!ChangeMe"
     },
     "appServiceSku": {
       "value": "B1"
