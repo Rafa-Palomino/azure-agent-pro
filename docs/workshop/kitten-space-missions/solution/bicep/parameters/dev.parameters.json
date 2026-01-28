@@ -36,9 +36,6 @@
     "sqlDatabaseTier": {
       "value": "Basic"
     },
-    "enableAutoShutdown": {
-      "value": true
-    },
     "logAnalyticsRetentionDays": {
       "value": 7
     }
