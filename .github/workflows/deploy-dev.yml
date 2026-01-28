@@ -111,6 +111,20 @@ jobs:
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
             --tags Environment=Development ManagedBy=GitHub-Actions Project=KittenMissions
           echo "✅ Resource Group ready: ${{ env.RESOURCE_GROUP }}"
+      - name: Validate Bicep Template
+        run: |
+          echo "🔍 Compilando y validando Bicep..."
+          az bicep build --file "${{ env.BICEP_PATH }}/main.bicep" --outfile /tmp/main.json
+          echo "✅ Bicep compilation successful"
+          
+          echo ""
+          echo "🔍 Ejecutando validación del template ARM..."
+          az deployment sub validate \
+            --location "${{ env.DEPLOYMENT_LOCATION }}" \
+            --template-file /tmp/main.json \
+            --parameters "${{ env.PARAMETERS_FILE }}" \
+            --output table
+          echo "✅ Template validation passed"
       - name: Pre-deployment What-If
         id: whatif
         continue-on-error: true
@@ -121,32 +135,46 @@ jobs:
             --template-file "${{ env.BICEP_PATH }}/main.bicep" \
             --parameters "${{ env.PARAMETERS_FILE }}" \
             --result-format "FullResourcePayloads" \
-            --output table
+            --output json 2>&1 | tee /tmp/whatif-output.json
       - name: Deploy Bicep Template
         id: deploy
         run: |
           echo "🚀 Desplegando infraestructura..."
-          DEPLOYMENT_OUTPUT=$(az deployment sub create \
+          set +e
+          az deployment sub create \
             --name "${{ env.DEPLOYMENT_NAME }}-${{ github.run_number }}" \
             --location "${{ env.DEPLOYMENT_LOCATION }}" \
             --template-file "${{ env.BICEP_PATH }}/main.bicep" \
             --parameters "${{ env.PARAMETERS_FILE }}" \
-            --output json 2>&1)
+            --output json \
+            --verbose \
+            --debug 2>&1 | tee /tmp/deployment-full.log
           DEPLOYMENT_EXIT_CODE=$?
+          set -e
+          
           if [ $DEPLOYMENT_EXIT_CODE -eq 0 ]; then
             echo "✅ Deployment exitoso"
-            DEPLOYMENT_ID=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.id')
-            echo "deployment_id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
+            # Obtener deployment details
+            DEPLOYMENT_INFO=$(az deployment sub list \
+              --query "[?name=='${{ env.DEPLOYMENT_NAME }}-${{ github.run_number }}'] | [0]" \
+              --output json)
+            echo "deployment_id=$(echo $DEPLOYMENT_INFO | jq -r '.id')" >> $GITHUB_OUTPUT
             echo "resource_group=${{ env.RESOURCE_GROUP }}" >> $GITHUB_OUTPUT
             echo "status=success" >> $GITHUB_OUTPUT
-            echo "$DEPLOYMENT_OUTPUT" | jq '.properties.outputs' > /tmp/deployment-outputs.json
           else
-            echo "❌ Deployment falló"
+            echo "❌ Deployment falló con código: $DEPLOYMENT_EXIT_CODE"
             echo ""
-            echo "==================== AZURE ERROR DETAILS ===================="
-            echo "$DEPLOYMENT_OUTPUT"
-            echo "============================================================="
+            echo "==================== FULL DEPLOYMENT LOG ===================="
+            cat /tmp/deployment-full.log
+            echo "============================================================"
             echo ""
+            # Intentar obtener detalles del error
+            echo "Intentando obtener detalles del error..."
+            az deployment operation sub list \
+              --name "${{ env.DEPLOYMENT_NAME }}-${{ github.run_number }}" \
+              --query "[?properties.provisioningState=='Failed'] | [0].properties.statusMessage" \
+              --output json 2>/dev/null || echo "No deployment operations found"
+            
             echo "deployment_id=failed" >> $GITHUB_OUTPUT
             echo "resource_group=${{ env.RESOURCE_GROUP }}" >> $GITHUB_OUTPUT
             echo "status=failed" >> $GITHUB_OUTPUT

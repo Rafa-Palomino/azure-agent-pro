@@ -16,6 +16,8 @@ secrets/
 *.secret
 *secrets.json
 service-principal.json
+github-sp-credentials.json
+*-credentials.json
 
 # Carpeta de trabajo privado (NO SUBIR AL REPO)
 work/
