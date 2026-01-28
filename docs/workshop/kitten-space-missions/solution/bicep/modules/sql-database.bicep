@@ -59,27 +59,29 @@ resource sqlServer 'Microsoft.Sql/servers@2023-05-01-preview' = {
     restrictOutboundNetworkAccess: 'Disabled'
     primaryUserAssignedIdentityId: null
     keyId: null
-    administrators: {
-      login: 'AzureAD Admin'
-      sid: '00000000-0000-0000-0000-000000000000'
-      tenantId: subscription().tenantId
-      principalType: 'Group'
-    }
+    // AAD admin commented out - invalid SID causes deployment failure
+    // To enable: provide real Azure AD user/group Object ID
+    // administrators: {
+    //   login: 'AzureAD Admin'
+    //   sid: '00000000-0000-0000-0000-000000000000'
+    //   tenantId: subscription().tenantId
+    //   principalType: 'Group'
+    // }
   }
 }
 
 // ============================================================================
-// FIREWALL RULE - Allow Azure Services
+// FIREWALL RULE - Commented out (incompatible with publicNetworkAccess: 'Disabled')
 // ============================================================================
-
-resource sqlServerFirewallRule 'Microsoft.Sql/servers/firewallRules@2023-05-01-preview' = {
-  parent: sqlServer
-  name: 'AllowAzureServices'
-  properties: {
-    startIpAddress: '0.0.0.0'
-    endIpAddress: '0.0.0.0'
-  }
-}
+// When using Private Endpoints, firewall rules are not needed
+// resource sqlServerFirewallRule 'Microsoft.Sql/servers/firewallRules@2023-05-01-preview' = {
+//   parent: sqlServer
+//   name: 'AllowAzureServices'
+//   properties: {
+//     startIpAddress: '0.0.0.0'
+//     endIpAddress: '0.0.0.0'
+//   }
+// }
 
 // ============================================================================
 // SQL DATABASE

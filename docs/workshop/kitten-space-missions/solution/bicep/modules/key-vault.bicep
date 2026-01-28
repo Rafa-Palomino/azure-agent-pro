@@ -26,7 +26,8 @@ param logAnalyticsWorkspaceId string
 // ============================================================================
 
 var resourceNamePrefix = '${projectName}-${workloadName}-${environment}'
-var keyVaultName = 'kv-${resourceNamePrefix}-${uniqueString(resourceGroup().id)}'
+// Key Vault name must be 3-24 characters (alphanumeric and hyphens only)
+var keyVaultName = take('kv-${projectName}-${environment}-${uniqueString(resourceGroup().id)}', 24)
 
 // ============================================================================
 // KEY VAULT
